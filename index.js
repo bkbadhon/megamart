@@ -781,6 +781,105 @@ async function run() {
                 res.status(500).send({ message: "Server error" });
             }
         });
+        
+        app.get("/team/:userId", async (req, res) => {
+            try {
+                const { userId } = req.params;
+
+                // Validate MongoDB ObjectId
+                if (!ObjectId.isValid(userId)) {
+                    return res.status(400).send({ message: "Invalid userId" });
+                }
+
+                // Fetch main user
+                const user = await usersCollection.findOne(
+                    { _id: new ObjectId(userId) },
+                    { projection: { password: 0 } }
+                );
+                if (!user) return res.status(404).send({ message: "User not found" });
+
+                // Extract generations
+                const level1Users = user?.generation?.level1 || [];
+                const level2Users = user?.generation?.level2 || [];
+                const level3Users = user?.generation?.level3 || [];
+
+                // All usernames including main user
+                const allUsernames = [user.username, ...level1Users, ...level2Users, ...level3Users];
+
+                // Fetch all team members
+                const teamUsers = await usersCollection
+                    .find({ username: { $in: allUsernames } })
+                    .project({ username: 1, balance: 1 })
+                    .toArray();
+
+                // Map usernames → user objects
+                const usernameToUser = {};
+                teamUsers.forEach(u => {
+                    usernameToUser[u.username] = u;
+                });
+
+                // Aggregate total balance
+                const totalBalance = teamUsers.reduce((acc, u) => acc + (u.balance || 0), 0);
+
+                // Get all userIds as string for deposits, withdraws, orders, tasks
+                const allUserIds = teamUsers.map(u => u._id.toString());
+
+                // Total deposits (only success)
+                const deposits = await depositsCollection
+                    .find({ username: { $in: allUsernames }, status: "success" })
+                    .toArray();
+                const totalDeposit = deposits.reduce((acc, tx) => acc + (tx.amount || 0), 0);
+
+                // Total withdraws (only success)
+                const withdraws = await withdrawCollection
+                    .find({ userId: { $in: allUserIds }, status: "success" })
+                    .toArray();
+                const totalWithdraw = withdraws.reduce((acc, tx) => acc + (tx.amount || 0), 0);
+
+                // Total orders amount
+                const orders = await ordersCollection
+                    .find({ userId: { $in: allUserIds } })
+                    .toArray();
+                const totalOrdersAmount = orders.reduce((acc, o) => acc + (o.amount || 0), 0);
+
+                // Total commission from tasks
+                const tasksDocs = await tasksCollection
+                    .find({ userId: { $in: allUserIds } })
+                    .toArray();
+                const totalCommission = tasksDocs.reduce((acc, doc) => {
+                    const tasks = doc.tasks || [];
+                    const completedTasks = tasks.filter(t => t.status === "completed");
+                    return acc + completedTasks.reduce((sum, t) => sum + (t.commission || 0), 0);
+                }, 0);
+
+                res.send({
+                    user: {
+                        userId: user._id,
+                        username: user.username,
+                        balance: user.balance,
+                    },
+                    team: {
+                        level1: level1Users.length,
+                        level2: level2Users.length,
+                        level3: level3Users.length,
+                        totalMembers: level1Users.length + level2Users.length + level3Users.length,
+                        totalBalance,
+                        totalDeposit,
+                        totalWithdraw,
+                        totalOrdersAmount,
+                        totalCommission,
+                    },
+                });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+
+
+
+
 
 
 
