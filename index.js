@@ -37,7 +37,7 @@ async function run() {
         const tasksCollection = db.collection("tasks");
         const productsCollection = db.collection("products");
         const ordersCollection = db.collection("orders");
-
+        const supportCollection = db.collection("support");
 
         app.post("/register", async (req, res) => {
             const { username, password, sponsorId } = req.body;
@@ -963,6 +963,76 @@ async function run() {
                 res.status(500).send({ message: "Server error" });
             }
         });
+
+
+       // supportCollection Routes
+
+// ✅ Get current Telegram username
+app.get("/support", async (req, res) => {
+    try {
+        const support = await supportCollection.findOne({});
+        if (!support) return res.status(404).send({ message: "No customer service username set yet" });
+        res.send(support);
+    } catch (err) {
+        console.error("GET /support error:", err);
+        res.status(500).send({ message: "Server error" });
+    }
+});
+
+// ✅ Add / Replace Telegram username (always keep only one document)
+app.post("/support", async (req, res) => {
+    const { telegramUsername } = req.body;
+    if (!telegramUsername) return res.status(400).send({ message: "Telegram username is required" });
+
+    try {
+        // delete previous entry (always keep one)
+        await supportCollection.deleteMany({});
+        const result = await supportCollection.insertOne({
+            telegramUsername,
+            createdAt: new Date(),
+        });
+
+        res.send({ message: "Customer service username added", id: result.insertedId });
+    } catch (err) {
+        console.error("POST /support error:", err);
+        res.status(500).send({ message: "Server error" });
+    }
+});
+
+// ✅ Update Telegram username (safe)
+app.put("/support/:id", async (req, res) => {
+    const { telegramUsername } = req.body;
+    const { id } = req.params;
+
+    if (!telegramUsername) return res.status(400).send({ message: "Telegram username is required" });
+
+    // check valid ObjectId
+    if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid ID format" });
+    }
+
+    try {
+        const result = await supportCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { telegramUsername, updatedAt: new Date() } }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).send({ message: "Support entry not found" });
+        }
+
+        if (result.modifiedCount === 0) {
+            return res.status(200).send({ message: "No changes (username is same)" });
+        }
+
+        res.send({ message: "Customer service username updated" });
+    } catch (err) {
+        console.error("PUT /support error:", err);
+        res.status(500).send({ message: "Server error" });
+    }
+});
+
+
 
 
         console.log("MongoDB Connected ✅");
