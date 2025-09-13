@@ -223,33 +223,40 @@ async function run() {
         });
 
 
+
         app.post("/deposit", async (req, res) => {
             try {
-                const { username, amount } = req.body;
+                const { username, amount, screenshot } = req.body;
 
                 if (!username || !amount || parseFloat(amount) <= 0.1) {
                     return res.status(400).send({ message: "Invalid deposit data" });
                 }
 
-                const depositsCollection = client.db("megamart").collection("deposits");
+                if (!screenshot || typeof screenshot !== "string") {
+                    return res.status(400).send({ message: "Invalid screenshot URL" });
+                }
 
-                // Insert deposit record with status "pending"
                 const depositData = {
                     username,
                     amount: parseFloat(amount),
-                    status: "pending",
+                    status: "pending", // pending by default
+                    screenshot,
                     createdAt: new Date(),
                 };
 
-                await depositsCollection.insertOne(depositData);
+                const result = await depositsCollection.insertOne(depositData);
 
-                // Return success immediately without updating user balance yet
-                res.send({ success: true, message: "Deposit recorded as pending" });
+                res.send({
+                    success: true,
+                    message: "Deposit recorded as pending",
+                    depositId: result.insertedId,
+                });
             } catch (err) {
                 console.error(err);
                 res.status(500).send({ message: "Server error" });
             }
         });
+
 
         // Get all deposits of a user
         app.get("/deposit/:username", async (req, res) => {
@@ -410,10 +417,6 @@ async function run() {
                 res.status(500).send({ message: "Server error" });
             }
         });
-
-
-
-
 
 
         app.get("/dashboard/stats", async (req, res) => {
@@ -740,6 +743,49 @@ async function run() {
             }
         });
 
+        app.get("/orders", async (req, res) => {
+            try {
+                const orders = await ordersCollection.find({}).toArray();
+                res.send(orders);
+            } catch (err) {
+                res.status(500).send({ error: err.message });
+            }
+        });
+        app.put("/orders/:orderId", async (req, res) => {
+            try {
+                const { orderId } = req.params;
+                const { status } = req.body;
+
+                if (!status || !["approved", "cancelled", "pending"].includes(status)) {
+                    return res.status(400).send({ error: "Invalid status" });
+                }
+
+                const result = await ordersCollection.findOneAndUpdate(
+                    { _id: new ObjectId(orderId) },
+                    { $set: { status } },
+                    { returnDocument: "after" }
+                );
+
+                if (!result.value) return res.status(404).send({ error: "Order not found" });
+
+                res.send(result.value);
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ error: err.message });
+            }
+        });
+
+        // Get orders for a specific user
+        app.get("/orders/user/:userId", async (req, res) => {
+            try {
+                const { userId } = req.params;
+                const orders = await ordersCollection.find({ userId }).toArray();
+                res.send(orders);
+            } catch (err) {
+                res.status(500).send({ error: err.message });
+            }
+        });
+
         // POST: Assign tasks to user
         app.post("/tasks/assign", async (req, res) => {
             const { userId, tasks } = req.body;
@@ -826,7 +872,6 @@ async function run() {
             }
         });
 
-        // PUT: Mark task as complete
         app.put("/tasks/:userId/:taskNumber", async (req, res) => {
             try {
                 const { userId, taskNumber } = req.params;
@@ -834,12 +879,35 @@ async function run() {
 
                 if (!status) return res.status(400).send({ message: "Status is required" });
 
-                const result = await tasksCollection.updateOne(
+                // Step 1: Update the specific task
+                const updateResult = await tasksCollection.updateOne(
                     { userId, "tasks.taskNumber": parseInt(taskNumber) },
                     { $set: { "tasks.$.status": status } }
                 );
 
-                if (result.matchedCount === 0) return res.status(404).send({ message: "Task not found" });
+                if (updateResult.matchedCount === 0)
+                    return res.status(404).send({ message: "Task not found" });
+
+                // Step 2: Fetch all tasks
+                const userTasksDoc = await tasksCollection.findOne({ userId });
+                if (!userTasksDoc) return res.status(404).send({ message: "User tasks not found" });
+
+                // Step 3: Filter completed tasks
+                const completedTasks = userTasksDoc.tasks.filter(t => t.status === "complete");
+
+                // Step 4: If 20 or more completed, remove first 20 complete tasks
+                if (completedTasks.length >= 20) {
+                    // Create a new tasks array excluding first 20 complete tasks
+                    let completedToRemove = completedTasks.slice(0, 20).map(t => t.taskNumber);
+                    const updatedTasks = userTasksDoc.tasks.filter(
+                        t => !completedToRemove.includes(t.taskNumber)
+                    );
+
+                    await tasksCollection.updateOne(
+                        { userId },
+                        { $set: { tasks: updatedTasks } }
+                    );
+                }
 
                 res.send({ message: "Task updated successfully" });
             } catch (err) {
@@ -847,6 +915,8 @@ async function run() {
                 res.status(500).send({ message: "Server error" });
             }
         });
+
+
 
         app.get("/team/:userId", async (req, res) => {
             try {
@@ -965,72 +1035,71 @@ async function run() {
         });
 
 
-       // supportCollection Routes
 
-// ✅ Get current Telegram username
-app.get("/support", async (req, res) => {
-    try {
-        const support = await supportCollection.findOne({});
-        if (!support) return res.status(404).send({ message: "No customer service username set yet" });
-        res.send(support);
-    } catch (err) {
-        console.error("GET /support error:", err);
-        res.status(500).send({ message: "Server error" });
-    }
-});
-
-// ✅ Add / Replace Telegram username (always keep only one document)
-app.post("/support", async (req, res) => {
-    const { telegramUsername } = req.body;
-    if (!telegramUsername) return res.status(400).send({ message: "Telegram username is required" });
-
-    try {
-        // delete previous entry (always keep one)
-        await supportCollection.deleteMany({});
-        const result = await supportCollection.insertOne({
-            telegramUsername,
-            createdAt: new Date(),
+        // ✅ Get current Telegram username
+        app.get("/support", async (req, res) => {
+            try {
+                const support = await supportCollection.findOne({});
+                if (!support) return res.status(404).send({ message: "No customer service username set yet" });
+                res.send(support);
+            } catch (err) {
+                console.error("GET /support error:", err);
+                res.status(500).send({ message: "Server error" });
+            }
         });
 
-        res.send({ message: "Customer service username added", id: result.insertedId });
-    } catch (err) {
-        console.error("POST /support error:", err);
-        res.status(500).send({ message: "Server error" });
-    }
-});
+        // ✅ Add / Replace Telegram username (always keep only one document)
+        app.post("/support", async (req, res) => {
+            const { telegramUsername } = req.body;
+            if (!telegramUsername) return res.status(400).send({ message: "Telegram username is required" });
 
-// ✅ Update Telegram username (safe)
-app.put("/support/:id", async (req, res) => {
-    const { telegramUsername } = req.body;
-    const { id } = req.params;
+            try {
+                // delete previous entry (always keep one)
+                await supportCollection.deleteMany({});
+                const result = await supportCollection.insertOne({
+                    telegramUsername,
+                    createdAt: new Date(),
+                });
 
-    if (!telegramUsername) return res.status(400).send({ message: "Telegram username is required" });
+                res.send({ message: "Customer service username added", id: result.insertedId });
+            } catch (err) {
+                console.error("POST /support error:", err);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
 
-    // check valid ObjectId
-    if (!ObjectId.isValid(id)) {
-        return res.status(400).send({ message: "Invalid ID format" });
-    }
+        // ✅ Update Telegram username (safe)
+        app.put("/support/:id", async (req, res) => {
+            const { telegramUsername } = req.body;
+            const { id } = req.params;
 
-    try {
-        const result = await supportCollection.updateOne(
-            { _id: new ObjectId(id) },
-            { $set: { telegramUsername, updatedAt: new Date() } }
-        );
+            if (!telegramUsername) return res.status(400).send({ message: "Telegram username is required" });
 
-        if (result.matchedCount === 0) {
-            return res.status(404).send({ message: "Support entry not found" });
-        }
+            // check valid ObjectId
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).send({ message: "Invalid ID format" });
+            }
 
-        if (result.modifiedCount === 0) {
-            return res.status(200).send({ message: "No changes (username is same)" });
-        }
+            try {
+                const result = await supportCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { telegramUsername, updatedAt: new Date() } }
+                );
 
-        res.send({ message: "Customer service username updated" });
-    } catch (err) {
-        console.error("PUT /support error:", err);
-        res.status(500).send({ message: "Server error" });
-    }
-});
+                if (result.matchedCount === 0) {
+                    return res.status(404).send({ message: "Support entry not found" });
+                }
+
+                if (result.modifiedCount === 0) {
+                    return res.status(200).send({ message: "No changes (username is same)" });
+                }
+
+                res.send({ message: "Customer service username updated" });
+            } catch (err) {
+                console.error("PUT /support error:", err);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
 
 
 
