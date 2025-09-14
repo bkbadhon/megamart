@@ -38,6 +38,7 @@ async function run() {
         const productsCollection = db.collection("products");
         const ordersCollection = db.collection("orders");
         const supportCollection = db.collection("support");
+        const adminCollection = db.collection("admin");
 
         app.post("/register", async (req, res) => {
             const { username, password, sponsorId } = req.body;
@@ -129,11 +130,29 @@ async function run() {
         });
 
 
-        // --------------------------
         app.get("/users", async (req, res) => {
-            const users = await usersCollection.find().toArray();
-            res.send(users);
+            try {
+                const users = await usersCollection.find().toArray();
+
+                // referCode -> username map বানানো
+                const referMap = {};
+                users.forEach(u => {
+                    referMap[u.referCode] = u.username;
+                });
+
+                // প্রতিটি ইউজারের sponsorUsername যোগ করা
+                const usersWithSponsorName = users.map(u => ({
+                    ...u,
+                    sponsorUsername: referMap[u.sponsorId] || null
+                }));
+
+                res.send(usersWithSponsorName);
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Server error" });
+            }
         });
+
 
         app.get("/users/:username", async (req, res) => {
             try {
@@ -1102,7 +1121,77 @@ async function run() {
         });
 
 
+        // Admin login
+        app.post("/adminlogin", async (req, res) => {
+            const { username, password } = req.body;
 
+            if (!username || !password)
+                return res.status(400).send({ message: "Username and password required" });
+
+            try {
+                const admin = await adminCollection.findOne({ username });
+
+                if (!admin)
+                    return res.status(404).send({ message: "Admin not found" });
+
+                // Password check (⚠️ production এ bcrypt ব্যবহার করুন)
+                if (admin.password !== password)
+                    return res.status(401).send({ message: "Incorrect password" });
+
+                // Optional: create a simple token (or JWT)
+                const token = Math.random().toString(36).substr(2, 12);
+
+                res.send({
+                    username: admin.username,
+                    token, // store this in frontend localStorage
+                });
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+        const ADMIN_ID = "68c684833c559107edc21422"; // আপনার admin _id
+        app.get("/admin", async (req, res) => {
+            try {
+                const admin = await adminCollection.findOne({ _id: new ObjectId(ADMIN_ID) });
+
+                if (!admin) return res.status(404).send({ message: "Admin not found" });
+
+                // শুধু username পাঠাবো, password পাঠাবেনা
+                res.send({ username: admin.username });
+            } catch (err) {
+                console.error("Fetch Admin Error:", err);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+        app.put("/admin", async (req, res) => {
+            const { username, password } = req.body;
+
+            if (!username && !password) {
+                return res.status(400).send({ message: "Nothing to update" });
+            }
+
+            const updateData = {};
+            if (username) updateData.username = username;
+            if (password) updateData.password = password; // ⚠️ production এ bcrypt use করুন
+
+            try {
+                const result = await adminCollection.updateOne(
+                    { _id: new ObjectId(ADMIN_ID) },
+                    { $set: updateData }
+                );
+
+                if (result.matchedCount === 0)
+                    return res.status(404).send({ message: "Admin not found" });
+
+                res.send({ message: "Admin updated successfully" });
+            } catch (err) {
+                console.error("Update Admin Error:", err);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
 
         console.log("MongoDB Connected ✅");
     } catch (error) {
