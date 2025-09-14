@@ -8,7 +8,7 @@ const Port = 5000;
 
 // CORS
 const corsOptions = {
-    origin: ["http://localhost:5173", 'http://localhost:5174', 'https://megamart-admin-self.vercel.app', 'https://investly-ecru.vercel.app'], // frontend URL
+    origin: ["http://localhost:5173", 'http://localhost:5174', 'https://admin.megamart7.com', 'https://www.megamart7.com', 'https://megamart7.com'],
     credentials: true,
 };
 app.use(cors(corsOptions));
