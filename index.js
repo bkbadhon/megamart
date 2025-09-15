@@ -281,24 +281,18 @@ async function run() {
 
         app.post("/withdraw", async (req, res) => {
             try {
-                const { userId, walletName, protocol, walletAddress, names, amount } = req.body;
+                const { userId, walletName, protocol, walletAddress, names } = req.body;
 
-                if (!userId || !walletName || !protocol || !walletAddress || !names || !amount) {
+                if (!userId || !walletName || !protocol || !walletAddress || !names) {
                     return res.status(400).send({ message: "All fields are required" });
                 }
 
-                const withdrawAmount = Number(amount);
-                if (isNaN(withdrawAmount) || withdrawAmount <= 0) {
-                    return res.status(400).send({ message: "Invalid amount" });
-                }
+                
 
                 const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
                 if (!user) return res.status(404).send({ message: "User not found" });
 
-                // Check user balance
-                if (user.balance < withdrawAmount) {
-                    return res.status(400).send({ message: "Insufficient balance" });
-                }
+                
 
                 // Create withdraw request
                 const withdrawRequest = {
@@ -307,23 +301,17 @@ async function run() {
                     protocol,
                     walletAddress,
                     names,
-                    amount: withdrawAmount,
                     status: "pending", // pending, approved, rejected
                     createdAt: new Date(),
                 };
 
                 const result = await withdrawCollection.insertOne(withdrawRequest);
 
-                // Deduct balance immediately
-                await usersCollection.updateOne(
-                    { _id: user._id },
-                    { $inc: { balance: -withdrawAmount } }
-                );
+                
 
                 res.send({
-                    message: "Withdraw request submitted successfully",
+                    message: "Withdraw Details request submitted successfully",
                     withdrawId: result.insertedId,
-                    newBalance: user.balance - withdrawAmount, // optional, send new balance to frontend
                 });
 
             } catch (error) {
@@ -348,52 +336,7 @@ async function run() {
         });
 
 
-        // Approve withdraw
-        app.put("/withdraws/:id/approve", async (req, res) => {
-            try {
-                const { id } = req.params;
-
-                // Update withdraw status
-                const result = await withdrawCollection.updateOne(
-                    { _id: new ObjectId(id) },
-                    { $set: { status: "success" } }
-                );
-
-                res.send({ message: "Withdraw approved", result });
-            } catch (err) {
-                console.error(err);
-                res.status(500).send({ message: "Server error" });
-            }
-        });
-
-        // Cancel withdraw (refund user balance)
-        app.put("/withdraws/:id/cancel", async (req, res) => {
-            try {
-                const { id } = req.params;
-
-                // Find withdraw request
-                const withdraw = await withdrawCollection.findOne({ _id: new ObjectId(id) });
-                if (!withdraw) return res.status(404).send({ message: "Withdraw not found" });
-
-                // Refund balance
-                await usersCollection.updateOne(
-                    { _id: new ObjectId(withdraw.userId) },
-                    { $inc: { balance: withdraw.amount } }
-                );
-
-                // Update status
-                const result = await withdrawCollection.updateOne(
-                    { _id: new ObjectId(id) },
-                    { $set: { status: "cancelled" } }
-                );
-
-                res.send({ message: "Withdraw cancelled and amount refunded", result });
-            } catch (err) {
-                console.error(err);
-                res.status(500).send({ message: "Server error" });
-            }
-        });
-
+    
 
         // Withdraw records API
         app.get("/withdraw/:userId", async (req, res) => {
