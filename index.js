@@ -39,6 +39,7 @@ async function run() {
         const ordersCollection = db.collection("orders");
         const supportCollection = db.collection("support");
         const adminCollection = db.collection("admin");
+        const withdrawRequestCollection = db.collection("withdrawRequest");
 
         app.post("/register", async (req, res) => {
             const { username, password, sponsorId } = req.body;
@@ -170,27 +171,6 @@ async function run() {
             }
         });
 
-
-        // app.put("/users/:id", async (req, res) => {
-        //     try {
-        //         const { id } = req.params;
-        //         const { balance } = req.body;
-
-        //         if (balance === undefined) return res.status(400).send({ message: "Balance is required" });
-
-        //         const result = await usersCollection.updateOne(
-        //             { _id: new ObjectId(id) },
-        //             { $set: { balance: Number(balance) } }
-        //         );
-
-        //         if (result.matchedCount === 0) return res.status(404).send({ message: "User not found" });
-
-        //         res.send({ message: "User updated successfully" });
-        //     } catch (err) {
-        //         console.error(err);
-        //         res.status(500).send({ message: "Server error" });
-        //     }
-        // });
 
         // Delete user
         app.delete("/users/:id", async (req, res) => {
@@ -433,6 +413,168 @@ async function run() {
                 res.send(records);
             } catch (error) {
                 console.error("Withdraw fetch error:", error);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+        // ✅ Withdraw Request (Balance Deduct + Save with Wallet Details)
+        app.post("/withdraw-request", async (req, res) => {
+            try {
+                const { userId, amount, walletName, walletAddress, protocol, names } = req.body;
+
+                if (!userId || !amount || amount <= 0) {
+                    return res.status(400).send({ message: "Invalid request" });
+                }
+
+                // find user
+                const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
+                if (!user) return res.status(404).send({ message: "User not found" });
+
+                if (user.balance < amount) {
+                    return res.status(400).send({ message: "Insufficient balance" });
+                }
+
+                // deduct balance
+                const newBalance = user.balance - amount;
+                await usersCollection.updateOne(
+                    { _id: new ObjectId(userId) },
+                    { $set: { balance: newBalance } }
+                );
+
+                // save withdraw request with wallet details
+                const withdrawRequest = {
+                    userId: new ObjectId(userId),
+                    amount,
+                    walletName: walletName || "",
+                    walletAddress: walletAddress || "",
+                    protocol: protocol || "",
+                    names: names || "",
+                    status: "pending",
+                    createdAt: new Date(), // ✅ Time tracking
+                };
+
+                await withdrawRequestCollection.insertOne(withdrawRequest);
+
+                res.send({ message: "Withdraw request submitted", newBalance, withdrawRequest });
+            } catch (error) {
+                console.error("Withdraw request error:", error);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+        // ✅ Get All Withdraw Requests (Admin / All Users)
+        app.get("/withdraw-request", async (req, res) => {
+            try {
+                const records = await withdrawRequestCollection
+                    .find({}) // No filter → all users
+                    .sort({ createdAt: -1 }) // newest first
+                    .toArray();
+
+                res.send(records);
+            } catch (error) {
+                console.error("Error fetching all withdraw records:", error);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+
+
+        // ✅ Get All Withdraw Requests for Logged-in User
+        app.get("/withdraw-request/:userId", async (req, res) => {
+            try {
+                const { userId } = req.params;
+
+                if (!userId || userId.length !== 24) {
+                    return res.status(400).send({ message: "Invalid userId" });
+                }
+
+                const records = await withdrawRequestCollection
+                    .find({ userId: new ObjectId(userId) }) // ✅ Only logged-in user's records
+                    .sort({ createdAt: -1 }) // newest first
+                    .toArray();
+
+                res.send(records);
+            } catch (error) {
+                console.error("Error fetching withdraw records:", error);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+
+        // ✅ Approve Withdraw Request
+        app.put("/withdraw-request/:id/approve", async (req, res) => {
+            try {
+                const { id } = req.params;
+
+                if (!id || id.length !== 24) {
+                    return res.status(400).send({ message: "Invalid withdraw request ID" });
+                }
+
+                // Find the withdraw request
+                const withdrawRequest = await withdrawRequestCollection.findOne({
+                    _id: new ObjectId(id),
+                });
+
+                if (!withdrawRequest) {
+                    return res.status(404).send({ message: "Withdraw request not found" });
+                }
+
+                if (withdrawRequest.status !== "pending") {
+                    return res
+                        .status(400)
+                        .send({ message: `Cannot approve a ${withdrawRequest.status} request` });
+                }
+
+                // Update status to approved
+                await withdrawRequestCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { status: "approved", approvedAt: new Date() } }
+                );
+
+                res.send({ message: "Withdraw request approved successfully" });
+            } catch (error) {
+                console.error("Error approving withdraw request:", error);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+        // ✅ Cancel Withdraw Request
+        app.put("/withdraw-request/:id/cancel", async (req, res) => {
+            try {
+                const { id } = req.params;
+
+                if (!id || id.length !== 24) {
+                    return res.status(400).send({ message: "Invalid withdraw request ID" });
+                }
+
+                const withdrawRequest = await withdrawRequestCollection.findOne({
+                    _id: new ObjectId(id),
+                });
+
+                if (!withdrawRequest) {
+                    return res.status(404).send({ message: "Withdraw request not found" });
+                }
+
+                if (withdrawRequest.status !== "pending") {
+                    return res
+                        .status(400)
+                        .send({ message: `Cannot cancel a ${withdrawRequest.status} request` });
+                }
+
+                // Optional: refund the amount to user's balance
+                await usersCollection.updateOne(
+                    { _id: new ObjectId(withdrawRequest.userId) },
+                    { $inc: { balance: withdrawRequest.amount } }
+                );
+
+                await withdrawRequestCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { status: "cancelled", cancelledAt: new Date() } }
+                );
+
+                res.send({ message: "Withdraw request cancelled and refunded" });
+            } catch (error) {
+                console.error("Error cancelling withdraw request:", error);
                 res.status(500).send({ message: "Server error" });
             }
         });
@@ -869,20 +1011,27 @@ async function run() {
             }
         });
 
-        // Make sure this comes AFTER update-balance
+        // Update user balance or remark
         app.put("/users/:id", async (req, res) => {
             try {
                 const { id } = req.params;
-                const { balance } = req.body;
+                const { balance, remark } = req.body;
 
-                if (balance === undefined) return res.status(400).send({ message: "Balance is required" });
+                if (balance === undefined && remark === undefined) {
+                    return res.status(400).send({ message: "Balance or remark is required" });
+                }
+
+                const updateFields = {};
+                if (balance !== undefined) updateFields.balance = Number(balance);
+                if (remark !== undefined) updateFields.remark = remark;
 
                 const result = await usersCollection.updateOne(
                     { _id: new ObjectId(id) },
-                    { $set: { balance: Number(balance) } }
+                    { $set: updateFields }
                 );
 
-                if (result.matchedCount === 0) return res.status(404).send({ message: "User not found" });
+                if (result.matchedCount === 0)
+                    return res.status(404).send({ message: "User not found" });
 
                 res.send({ message: "User updated successfully" });
             } catch (err) {
@@ -898,10 +1047,23 @@ async function run() {
 
                 if (!status) return res.status(400).send({ message: "Status is required" });
 
+                // Prepare the fields to update
+                const updateFields = {
+                    "tasks.$.status": status
+                };
+
+                // ✅ Add completedDate only when status is complete
+                if (status === "complete") {
+                    updateFields["tasks.$.completedDate"] = new Date(); // store current date
+                } else {
+                    // Optionally remove completedDate if task is marked as incomplete again
+                    updateFields["tasks.$.completedDate"] = null;
+                }
+
                 // Step 1: Update the specific task
                 const updateResult = await tasksCollection.updateOne(
                     { userId, "tasks.taskNumber": parseInt(taskNumber) },
-                    { $set: { "tasks.$.status": status } }
+                    { $set: updateFields }
                 );
 
                 if (updateResult.matchedCount === 0)
@@ -916,7 +1078,6 @@ async function run() {
 
                 // Step 4: If 20 or more completed, remove first 20 complete tasks
                 if (completedTasks.length >= 20) {
-                    // Create a new tasks array excluding first 20 complete tasks
                     let completedToRemove = completedTasks.slice(0, 20).map(t => t.taskNumber);
                     const updatedTasks = userTasksDoc.tasks.filter(
                         t => !completedToRemove.includes(t.taskNumber)
@@ -934,6 +1095,7 @@ async function run() {
                 res.status(500).send({ message: "Server error" });
             }
         });
+
 
 
 
